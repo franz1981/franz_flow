@@ -13,7 +13,7 @@
 
 static const index_t RECORD_HEADER_LENGTH = sizeof(uint32_t) * 2;
 static const index_t RECORD_ALIGNMENT = sizeof(uint32_t) * 2;
-static const index_t RECORD_PADDING_MSG_TYPE_ID = -1;
+static const int32_t RECORD_PADDING_MSG_TYPE_ID = -1;
 
 inline static index_t required_record_capacity(const index_t record_length){
     return align(record_length + RECORD_HEADER_LENGTH, RECORD_ALIGNMENT);
@@ -31,7 +31,7 @@ inline static index_t encoded_msg_offset(const index_t record_offset) {
     return record_offset + RECORD_HEADER_LENGTH;
 }
 
-inline static uint64_t make_header(const uint32_t msgTypeId, const index_t length) {
+inline static uint64_t make_header(const int32_t msgTypeId, const index_t length) {
     return (((uint64_t) msgTypeId & 0xFFFFFFFF) << 32) | (length & 0xFFFFFFFF);
 }
 
@@ -43,7 +43,7 @@ inline static uint32_t message_type_id(const uint64_t header) {
     return (uint32_t) (header >> 32);
 }
 
-inline static bool check_msg_type_id(const uint32_t msgTypeId) {
+inline static bool check_msg_type_id(const int32_t msgTypeId) {
     return (msgTypeId > 0);
 }
 

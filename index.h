@@ -7,6 +7,6 @@
 
 #include <stdint.h>
 
-typedef uint32_t index_t;
+typedef int32_t index_t;
 
 #endif //FRANZ_FLOW_INDEX_H
