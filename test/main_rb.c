@@ -163,7 +163,7 @@ static void *consumer(void *arg) {
     return NULL;
 }
 
-int fake() {
+int main() {
     struct ring_buffer_header header;
     const index_t buffer_capacity = ring_buffer_capacity(64 * 1024 * required_record_capacity(DEFAULT_MSG_LENGTH));
     if (!init_ring_buffer_header(&header, buffer_capacity)) {
