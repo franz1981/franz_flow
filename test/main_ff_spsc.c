@@ -36,8 +36,8 @@ void *producer(void *arg) {
         for (uint64_t m = 0; m < messages; m++) {
 
             const uint64_t next_msg_id = msg_id + 1;
-            while (!try_fixed_size_ring_buffer_lookahead_claim(buffer, header, MAX_LOOKAHEAD_CLAIM, &message_content)) {
-                //while (!try_fixed_size_ring_buffer_claim(buffer, header, &message_content)) {
+            //while (!try_fixed_size_ring_buffer_mp_claim(buffer, header, &message_content)) {
+            while (!try_fixed_size_ring_buffer_claim(buffer, header, MAX_LOOKAHEAD_CLAIM, &message_content)) {
                 __asm__ __volatile__("pause;");
                 total_try++;
                 //wait strategy
@@ -67,35 +67,6 @@ void *producer(void *arg) {
         printf("%ldM ops/sec %ld/%ld failed tries end latency:%ld ns\n", tpt, total_try - messages, (uint64_t) messages,
                wait_nanos);
     }
-    return NULL;
-}
-
-void *consumer(void *arg) {
-    struct ring_buffer_test *test = (struct ring_buffer_test *) arg;
-    struct fixed_size_ring_buffer_header *header = test->header;
-    uint8_t *buffer = test->buffer;
-    const uint64_t tests = test->tests;
-    const uint64_t messages = test->messages;
-    const uint64_t total_messages = tests * messages;
-    uint8_t *message_read = NULL;
-    uint64_t read_messages = 0;
-    uint64_t failed_read = 0;
-    while (read_messages < total_messages) {
-        while (!try_fixed_size_ring_buffer_read(buffer, header, &message_read)) {
-            __asm__ __volatile__("pause;");
-            failed_read++;
-        }
-        const uint64_t expected_msg = read_messages + 1;
-        const uint64_t *content_offset = (uint64_t *) (message_read + MSG_INITIAL_PAD);
-        const uint64_t content = *content_offset;
-        fixed_size_ring_buffer_commit_read(message_read);
-        if (content != expected_msg) {
-            printf("ERROR!\n");
-            return NULL;
-        }
-        read_messages++;
-    }
-    printf("%ld/%ld failed reads\n", failed_read, total_messages);
     return NULL;
 }
 
@@ -148,42 +119,7 @@ void *batch_consumer(void *arg) {
     return NULL;
 }
 
-void *stream_batch_consumer(void *arg) {
-    struct ring_buffer_test *test = (struct ring_buffer_test *) arg;
-    struct fixed_size_ring_buffer_header *header = test->header;
-    uint8_t *buffer = test->buffer;
-    const uint64_t tests = test->tests;
-    const uint64_t messages = test->messages;
-    const uint32_t batch_size = header->capacity / 64;
-    const uint64_t total_messages = tests * messages;
-    const fixed_size_message_consumer consumer = &on_message;
-    int64_t expected_content = 1;
-    uint64_t read_messages = 0;
-    uint64_t failed_read = 0;
-    uint64_t success = 0;
-    while (read_messages < total_messages && expected_content > 0) {
-        const uint32_t read = fixed_size_ring_buffer_stream_batch_read(buffer, header, consumer, batch_size,
-                                                                &expected_content);
-        if (read == 0) {
-            __asm__ __volatile__("pause;");
-            failed_read++;
-        } else {
-            success++;
-            read_messages += read;
-        }
-    }
-    if (expected_content < 0) {
-        printf("read %ld messages instead of %ld!", read_messages, total_messages);
-    } else {
-        printf("avg batch reads:%ld %ld/%ld failed reads\n", read_messages / success, failed_read, total_messages);
-    }
-
-    return NULL;
-}
-
 int main() {
-    const bool batch_read = true;
-    const bool stream = false;
     const index_t requested_capacity = 64 * 1024;
 
     const index_t buffer_capacity = fixed_size_ring_buffer_capacity(requested_capacity, DEFAULT_MSG_LENGTH);
@@ -210,15 +146,7 @@ int main() {
     test.messages = 1000000000;
     test.tests = 10;
     pthread_t consumer_processor;
-    if (batch_read) {
-        if(stream){
-            pthread_create(&consumer_processor, NULL, stream_batch_consumer, &test);
-        }else {
-            pthread_create(&consumer_processor, NULL, batch_consumer, &test);
-        }
-    } else {
-        pthread_create(&consumer_processor, NULL, consumer, &test);
-    }
+    pthread_create(&consumer_processor, NULL, batch_consumer, &test);
     pthread_t producer_processor;
     pthread_create(&producer_processor, NULL, producer, &test);
 

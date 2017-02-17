@@ -70,10 +70,10 @@ static inline bool claim_slow_path(uint8_t *const buffer, const index_t message_
 }
 
 static inline bool
-try_fixed_size_ring_buffer_lookahead_claim(uint8_t *const buffer,
-                                           const struct fixed_size_ring_buffer_header *const header,
-                                           const uint32_t max_look_ahead_step,
-                                           uint8_t **const claimed_message) {
+try_fixed_size_ring_buffer_claim(uint8_t *const buffer,
+                                 const struct fixed_size_ring_buffer_header *const header,
+                                 const uint32_t max_look_ahead_step,
+                                 uint8_t **const claimed_message) {
     const _Atomic uint64_t *const producer_position_address = (_Atomic uint64_t *) header->producer_position;
     uint64_t *const consumer_cache_position_address = (uint64_t *) header->consumer_cache_position;
     const index_t mask = header->mask;
@@ -92,23 +92,44 @@ try_fixed_size_ring_buffer_lookahead_claim(uint8_t *const buffer,
     return true;
 }
 
-static inline bool
-try_fixed_size_ring_buffer_claim(uint8_t *const buffer, const struct fixed_size_ring_buffer_header *const header,
-                                 uint8_t **const claimed_message) {
-    const _Atomic uint64_t *const producer_position_address = (_Atomic uint64_t *) header->producer_position;
-    const index_t mask = header->mask;
-    const index_t aligned_message_size = header->aligned_message_size;
-    const uint64_t producer_position = atomic_load_explicit(producer_position_address, memory_order_relaxed);
-    const index_t message_state_offset = (producer_position & mask) * aligned_message_size;
-    const _Atomic uint32_t *const claimed_message_state_atomic_address = (_Atomic uint32_t *) (buffer +
-                                                                                               message_state_offset);
-    const uint32_t claimed_message_state_value = atomic_load_explicit(claimed_message_state_atomic_address,
-                                                                      memory_order_relaxed);
-    if (claimed_message_state_value != MESSAGE_STATE_FREE) {
+static inline bool mp_claim_slow_path(const _Atomic uint64_t *const consumer_position_address,
+                                      const _Atomic uint64_t *const consumer_cache_position_address,
+                                      const int64_t wrap_point, int64_t *consumer_cache_position) {
+    //the queue is really full??
+    const uint64_t consumer_position = atomic_load_explicit(consumer_position_address, memory_order_relaxed);
+    if (consumer_position <= wrap_point) {
         return false;
+    } else {
+        *consumer_cache_position = consumer_position;
+        atomic_store_explicit(consumer_cache_position_address, consumer_position, memory_order_relaxed);
+        return true;
     }
-    atomic_thread_fence(memory_order_acquire);
-    atomic_store_explicit(producer_position_address, producer_position + 1, memory_order_relaxed);
+}
+
+static inline bool try_fixed_size_ring_buffer_mp_claim(
+        uint8_t *const buffer,
+        const struct fixed_size_ring_buffer_header *const header,
+        uint8_t **const claimed_message) {
+    const _Atomic uint64_t *const producer_position_address = (_Atomic uint64_t *) header->producer_position;
+    const _Atomic uint64_t *const consumer_cache_position_address = (_Atomic uint64_t *) header->consumer_cache_position;
+    const _Atomic uint64_t *const consumer_position_address = (_Atomic uint64_t *) header->consumer_position;
+    const index_t mask = header->mask;
+    const index_t capacity = header->capacity;
+    const index_t aligned_message_size = header->aligned_message_size;
+    int64_t producer_position = atomic_load_explicit(producer_position_address, memory_order_acquire);
+    int64_t consumer_cache_position = atomic_load_explicit(consumer_cache_position_address, memory_order_relaxed);
+    do {
+        const int64_t wrap_point = producer_position - capacity;
+        if (consumer_cache_position <= wrap_point) {
+            //is *REALLY* full?
+            if (!mp_claim_slow_path(consumer_position_address, consumer_cache_position_address, wrap_point,
+                                    &consumer_cache_position)) {
+                return false;
+            }
+        }
+    } while (!atomic_compare_exchange_weak_explicit(producer_position_address, &producer_position,
+                                                    producer_position + 1, memory_order_release, memory_order_relaxed));
+    const index_t message_state_offset = (producer_position & mask) * aligned_message_size;
     *claimed_message = buffer + message_state_offset + MESSAGE_STATE_SIZE;
     return true;
 }
@@ -117,33 +138,6 @@ static inline void fixed_size_ring_buffer_commit_claim(const uint8_t *const clai
     const _Atomic uint32_t *const message_state = (_Atomic uint32_t *) (claimed_message_address - MESSAGE_STATE_SIZE);
     atomic_store_explicit(message_state, MESSAGE_STATE_BUSY, memory_order_release);
 }
-
-static inline bool
-try_fixed_size_ring_buffer_read(uint8_t *const buffer, const struct fixed_size_ring_buffer_header *const header,
-                                uint8_t **const read_message_address) {
-    const _Atomic uint64_t *const consumer_position_address = (_Atomic uint64_t *) header->consumer_position;
-    const index_t mask = header->mask;
-    const index_t aligned_message_size = header->aligned_message_size;
-    const uint64_t consumer_position = atomic_load_explicit(consumer_position_address, memory_order_relaxed);
-    const index_t message_state_offset = (consumer_position & mask) * aligned_message_size;
-    uint8_t *const message_state_address = buffer + message_state_offset;
-    const _Atomic uint32_t *const message_state_atomic_address = (_Atomic uint32_t *) message_state_address;
-    const uint32_t message_state_value = atomic_load_explicit(message_state_atomic_address, memory_order_relaxed);
-    //can't consume if not filled!
-    if (message_state_value == MESSAGE_STATE_FREE) {
-        return false;
-    }
-    atomic_thread_fence(memory_order_acquire);
-    atomic_store_explicit(consumer_position_address, consumer_position + 1, memory_order_relaxed);
-    *read_message_address = message_state_address + MESSAGE_STATE_SIZE;
-    return true;
-}
-
-static inline void fixed_size_ring_buffer_commit_read(const uint8_t *const read_message_address) {
-    const _Atomic uint32_t *const message_state = (_Atomic uint32_t *) (read_message_address - MESSAGE_STATE_SIZE);
-    atomic_store_explicit(message_state, MESSAGE_STATE_FREE, memory_order_release);
-}
-
 
 inline static uint32_t fixed_size_ring_buffer_batch_read(
         uint8_t *const buffer,
@@ -165,33 +159,13 @@ inline static uint32_t fixed_size_ring_buffer_batch_read(
             return msg_read;
         } else {
             atomic_thread_fence(memory_order_acquire);
-            atomic_store_explicit(consumer_position_address, message_position + 1, memory_order_relaxed);
             uint8_t *message_content_address = message_state_address + MESSAGE_STATE_SIZE;
             const bool stop = !consumer(message_content_address, context);
             atomic_store_explicit((_Atomic uint32_t *) message_state_address, MESSAGE_STATE_FREE, memory_order_release);
+            atomic_store_explicit(consumer_position_address, message_position + 1, memory_order_relaxed);
             msg_read++;
             if (stop) {
                 return msg_read;
-            }
-        }
-    }
-    return count;
-}
-
-inline static uint32_t fixed_size_ring_buffer_stream_batch_read(
-        uint8_t *const buffer,
-        const struct fixed_size_ring_buffer_header *const header,
-        const fixed_size_message_consumer consumer,
-        const uint32_t count, void *const context) {
-    uint8_t *read_message_address;
-    for (uint32_t i = 0; i < count; i++) {
-        if (!try_fixed_size_ring_buffer_read(buffer, header, &read_message_address)) {
-            return i;
-        } else {
-            const bool stop = !consumer(read_message_address, context);
-            fixed_size_ring_buffer_commit_read(read_message_address);
-            if (stop) {
-                return i + 1;
             }
         }
     }
