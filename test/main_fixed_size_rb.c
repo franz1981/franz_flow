@@ -15,11 +15,14 @@ struct ring_buffer_test {
     uint8_t *buffer;
     uint64_t tests;
     uint64_t messages;
+    uint64_t producers;
 };
 
+#define PRODUCERS 1
 #define MAX_LOOKAHEAD_CLAIM 4096
 
 void *producer(void *arg) {
+    const pthread_t thread_id = pthread_self();
     struct ring_buffer_test *test = (struct ring_buffer_test *) arg;
     struct fixed_size_ring_buffer_header *header = test->header;
     uint8_t *buffer = test->buffer;
@@ -36,11 +39,18 @@ void *producer(void *arg) {
         for (uint64_t m = 0; m < messages; m++) {
 
             const uint64_t next_msg_id = msg_id + 1;
-            //while (!try_fixed_size_ring_buffer_mp_claim(buffer, header, &message_content)) {
-            while (!try_fixed_size_ring_buffer_claim(buffer, header, MAX_LOOKAHEAD_CLAIM, &message_content)) {
-                __asm__ __volatile__("pause;");
-                total_try++;
-                //wait strategy
+            if (PRODUCERS == 1) {
+                while (!try_fixed_size_ring_buffer_claim(buffer, header, MAX_LOOKAHEAD_CLAIM, &message_content)) {
+                    __asm__ __volatile__("pause;");
+                    total_try++;
+                    //wait strategy
+                }
+            } else {
+                while (!try_fixed_size_ring_buffer_mp_claim(buffer, header, &message_content)) {
+                    __asm__ __volatile__("pause;");
+                    total_try++;
+                    //wait strategy
+                }
             }
             total_try++;
             //provides better way to perform zero copy!!!!
@@ -52,7 +62,8 @@ void *producer(void *arg) {
         //to verify the theory of the false sharing when the consumer is too fast...
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_produce_time);
         //wait until all the messages get consumed
-        while (fixed_size_ring_buffer_size(header) != 0) {
+        const uint64_t producer_position = atomic_load_explicit(header->producer_position, memory_order_relaxed);
+        while (atomic_load_explicit(header->consumer_position, memory_order_relaxed) < producer_position) {
             __asm__ __volatile__("pause;");
             //employ wait strategy
         }
@@ -64,7 +75,8 @@ void *producer(void *arg) {
                 ((end_time.tv_sec - start_time.tv_sec) * 1000000000) + (end_time.tv_nsec - start_time.tv_nsec);
         const uint64_t tpt = (messages * 1000L) / elapsed_nanos;
 
-        printf("%ldM ops/sec %ld/%ld failed tries end latency:%ld ns\n", tpt, total_try - messages, (uint64_t) messages,
+        printf("[%ld]\t%ldM ops/sec %ld/%ld failed tries end latency:%ld ns\n", thread_id, tpt, total_try - messages,
+               (uint64_t) messages,
                wait_nanos);
     }
     return NULL;
@@ -76,9 +88,11 @@ inline static bool on_message(uint8_t *const buffer, void *const context) {
     //PAD REQUIRED TO GET 8 BYTES ALIGNED READ
     const uint64_t *msg_content_address = (uint64_t *) (buffer + MSG_INITIAL_PAD);
     const uint64_t msg_content = *msg_content_address;
-    if (expected_msg_content != msg_content) {
-        *expected_content = -1;
-        return false;
+    if (PRODUCERS == 1) {
+        if (expected_msg_content != msg_content) {
+            *expected_content = -1;
+            return false;
+        }
     }
     //change next expected content!
     const uint64_t next_expected_content = expected_msg_content + 1;
@@ -93,7 +107,7 @@ void *batch_consumer(void *arg) {
     const uint64_t tests = test->tests;
     const uint64_t messages = test->messages;
     const uint32_t batch_size = header->capacity / 64;
-    const uint64_t total_messages = tests * messages;
+    const uint64_t total_messages = test->producers * tests * messages;
     const fixed_size_message_consumer consumer = &on_message;
     int64_t expected_content = 1;
     uint64_t read_messages = 0;
@@ -145,12 +159,16 @@ int main() {
     test.header = &header;
     test.messages = 1000000000;
     test.tests = 10;
+    test.producers = PRODUCERS;
     pthread_t consumer_processor;
     pthread_create(&consumer_processor, NULL, batch_consumer, &test);
-    pthread_t producer_processor;
-    pthread_create(&producer_processor, NULL, producer, &test);
-
-    pthread_join(producer_processor, NULL);
+    pthread_t producer_processor[PRODUCERS];
+    for (int i = 0; i < PRODUCERS; i++) {
+        pthread_create(&producer_processor[i], NULL, producer, &test);
+    }
+    for (int i = 0; i < PRODUCERS; i++) {
+        pthread_join(producer_processor[i], NULL);
+    }
     pthread_join(consumer_processor, NULL);
     free(buffer);
     return 0;

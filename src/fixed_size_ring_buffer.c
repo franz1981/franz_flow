@@ -38,7 +38,7 @@ init_fixed_size_ring_buffer_header(uint8_t *const buffer, struct fixed_size_ring
     return true;
 }
 
-static inline bool claim_slow_path(uint8_t *const buffer, const index_t message_state_offset,
+static bool claim_slow_path(uint8_t *const buffer, const index_t message_state_offset,
                                    uint64_t *const consumer_cache_position_address,
                                    const uint64_t consumer_cache_position, const uint32_t max_look_ahead_step,
                                    const index_t mask, const index_t aligned_message_size) {
@@ -92,7 +92,7 @@ try_fixed_size_ring_buffer_claim(uint8_t *const buffer,
     return true;
 }
 
-static inline bool mp_claim_slow_path(const _Atomic uint64_t *const consumer_position_address,
+static bool mp_claim_slow_path(const _Atomic uint64_t *const consumer_position_address,
                                       const _Atomic uint64_t *const consumer_cache_position_address,
                                       const int64_t wrap_point, int64_t *consumer_cache_position) {
     //the queue is really full??
@@ -100,6 +100,7 @@ static inline bool mp_claim_slow_path(const _Atomic uint64_t *const consumer_pos
     if (consumer_position <= wrap_point) {
         return false;
     } else {
+        atomic_thread_fence(memory_order_acquire);
         *consumer_cache_position = consumer_position;
         atomic_store_explicit(consumer_cache_position_address, consumer_position, memory_order_relaxed);
         return true;
@@ -161,8 +162,11 @@ inline static uint32_t fixed_size_ring_buffer_batch_read(
             atomic_thread_fence(memory_order_acquire);
             uint8_t *message_content_address = message_state_address + MESSAGE_STATE_SIZE;
             const bool stop = !consumer(message_content_address, context);
+            //this first release is necessary in the single producer case to be sure that ay operation on the message content performed in consumer
+            //will be visible to it when it will acquire the message state indicator
             atomic_store_explicit((_Atomic uint32_t *) message_state_address, MESSAGE_STATE_FREE, memory_order_release);
-            atomic_store_explicit(consumer_position_address, message_position + 1, memory_order_relaxed);
+            //the second release is necessary to be sure that in the multi producer case, the last store of the indicator will happen before the consume read
+            atomic_store_explicit(consumer_position_address, message_position + 1, memory_order_release);
             msg_read++;
             if (stop) {
                 return msg_read;

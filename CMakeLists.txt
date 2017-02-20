@@ -8,7 +8,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY lib)
 
 SET(SOURCE
     src/fixed_size_ring_buffer.c
-)
+    src/fixed_size_stream.c)
 
 SET(HEADERS
     include/bytes_utils.h  
@@ -16,11 +16,13 @@ SET(HEADERS
     include/index.h
     include/message_layout.h
     include/ring_buffer.h
-    include/ring_buffer_layout.h)
+    include/ring_buffer_layout.h
+    include/fixed_size_stream.h)
 
 include_directories("src")
 include_directories("include")
 
 add_library(franz_flow ${SOURCE} ${HEADERS})
-add_executable(main_ff_spsc test/main_ff_spsc.c)
+add_executable(main_fixed_size_rb test/main_fixed_size_rb.c)
 add_executable(main_rb test/main_rb.c)
+add_executable(main_stream test/main_stream.c test/main_stream.c)
