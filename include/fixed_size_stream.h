@@ -24,6 +24,13 @@ struct fixed_size_stream_t {
     uint32_t aligned_message_size;
 };
 
+static inline bool new_fixed_size_stream(
+        uint8_t *const buffer,
+        struct fixed_size_stream_t *const stream,
+        const uint32_t requested_capacity,
+        const uint32_t message_size,
+        const uint32_t cycles);
+
 static inline uint32_t
 fixed_size_stream_capacity(const uint32_t requested_capacity, const uint32_t message_size, const uint32_t cycles);
 

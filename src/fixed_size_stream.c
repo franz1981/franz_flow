@@ -108,7 +108,7 @@ static inline bool fixed_size_stream_try_claim(
     //translate the claim in an absolute sequence value
     const uint64_t producer_claim_cycle_position = (producer_claim & 0xFFFFFFFF);
     //a claim position could be > cycle length
-    const uint32_t producer_claim_cycle_id = (producer_claim >> 32);
+    const uint64_t producer_claim_cycle_id = (producer_claim >> 32);
     const uint64_t producer_position = (producer_claim_cycle_id * stream->cycle_length) + producer_claim_cycle_position;
     const uint64_t claim_limit =
             atomic_load_explicit(stream->consumer_cache_position, memory_order_relaxed) + stream->max_gain;
@@ -186,7 +186,7 @@ static inline uint64_t load_producer_position(const struct fixed_size_stream_t *
     if (cycle_position > cycle_length) {
         cycle_position = cycle_length;
     }
-    const uint32_t cycle_id = (producer_claim >> 32);
+    const uint64_t cycle_id = (producer_claim >> 32);
     const uint64_t producer_position = (cycle_id * stream->cycle_length) + cycle_position;
     return producer_position;
 }
