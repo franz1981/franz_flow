@@ -2,11 +2,7 @@
 // Created by forked_franz on 04/02/17.
 //
 
-#ifndef FRANZ_FLOW_BYTES_UTILS_H
-#define FRANZ_FLOW_BYTES_UTILS_H
-
 #include <stdbool.h>
-#include <stddef.h>
 #include "index.h"
 
 #define CACHE_LINE_LENGTH 64
@@ -30,5 +26,3 @@ inline static index_t next_pow_2(const index_t value) {
     v++;
     return v;
 }
-
-#endif //FRANZ_FLOW_BYTES_UTILS_H

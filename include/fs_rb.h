@@ -6,7 +6,6 @@
 #define FRANZ_FLOW_FIXED_SIZE_RING_BUFFER_H
 
 #include <stdbool.h>
-#include <stdio.h>
 #include "index.h"
 
 /**
@@ -22,7 +21,7 @@
  * The fields that can be readable directly are marked as [readable], [not readable] otherwise.
  *
  */
-struct fixed_size_ring_buffer_header {
+struct fs_rb_t {
     uint8_t *producer_position;         /*  producer position sequence                              [not readable]      */
     uint8_t *consumer_cache_position;   /*  last consumer sequence read by the producer             [not readable]      */
     uint8_t *consumer_position;         /*  consumer position sequence                              [not readable]      */
@@ -38,7 +37,11 @@ struct fixed_size_ring_buffer_header {
  * @param message_size          the size in bytes of each message
  * @returns                     the capacity in bytes of the ring buffer + trailer
  */
-static inline index_t fixed_size_ring_buffer_capacity(const index_t requested_capacity, const uint32_t message_size);
+static inline index_t fs_rb_capacity(const index_t requested_capacity, const uint32_t message_size);
+
+inline static uint64_t fs_rb_load_consumer_position(const struct fs_rb_t *const header, const uint8_t *const buffer);
+
+inline static uint64_t fs_rb_load_producer_position(const struct fs_rb_t *const header, const uint8_t *const buffer);
 
 /**
  * Initialize the headers fields and the ring buffer trailer to be used by the producer/consumer.
@@ -49,9 +52,9 @@ static inline index_t fixed_size_ring_buffer_capacity(const index_t requested_ca
  * @param message_size          the size in bytes of each message
  * @returns                     {@code true} is the header is being initialized, {@code false} otherwise
  */
-static inline bool init_fixed_size_ring_buffer_header(
+static inline bool new_fs_rb(
         uint8_t *const buffer,
-        struct fixed_size_ring_buffer_header *const header,
+        struct fs_rb_t *const header,
         const index_t requested_capacity,
         const uint32_t message_size);
 
@@ -66,27 +69,27 @@ static inline bool init_fixed_size_ring_buffer_header(
  * @param claimed_message       a pointer to the claimed content of the ring buffer: is aligned to 4 bytes and has size equals to @code{(header->aligned_message_size - 4)}
  * @returns                     {@code true} if the buffer is not empty, {@code false} otherwise
  */
-static inline bool try_fixed_size_ring_buffer_claim(
+static inline bool try_fs_rb_sp_claim(
         uint8_t *const buffer,
-        const struct fixed_size_ring_buffer_header *const header,
+        const struct fs_rb_t *const header,
         const uint32_t max_look_ahead_step,
         uint8_t **const claimed_message);
 
-static inline bool try_fixed_size_ring_buffer_mp_claim(
+static inline bool try_fs_rb_mp_claim(
         uint8_t *const buffer,
-        const struct fixed_size_ring_buffer_header *const header,
+        const struct fs_rb_t *const header,
         uint8_t **const claimed_message);
 
-static inline void fixed_size_ring_buffer_commit_claim(const uint8_t *const claimed_message_address);
+static inline void fs_rb_commit_claim(const uint8_t *const claimed_message_address);
 
-typedef bool(*const fixed_size_message_consumer)(uint8_t *const, void *const);
+typedef bool(*const fs_rb_message_consumer)(uint8_t *const, void *const);
 
-inline static uint32_t fixed_size_ring_buffer_batch_read(
+inline static uint32_t fs_rb_read(
         uint8_t *const buffer,
-        const struct fixed_size_ring_buffer_header *const header,
-        const fixed_size_message_consumer consumer,
+        const struct fs_rb_t *const header,
+        const fs_rb_message_consumer consumer,
         const uint32_t count, void *const context);
 
-static inline index_t fixed_size_ring_buffer_size(const struct fixed_size_ring_buffer_header *const header);
+static inline index_t fs_rb_size(const struct fs_rb_t *const header);
 
 #endif //FRANZ_FLOW_FIXED_SIZE_RING_BUFFER_H

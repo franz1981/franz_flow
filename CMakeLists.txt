@@ -7,17 +7,16 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY lib)
 
 SET(SOURCE
-    src/fixed_size_ring_buffer.c
-    src/fixed_size_stream.c)
+    src/bytes_utils.c
+        src/fs_rb.c
+        src/fs_stream.c
+    src/vs_rb.c)
 
 SET(HEADERS
-    include/bytes_utils.h  
-    include/fixed_size_ring_buffer.h
+        include/fs_rb.h
     include/index.h
-    include/message_layout.h
-    include/ring_buffer.h
-    include/ring_buffer_layout.h
-    include/fixed_size_stream.h)
+        include/fs_stream.h
+    include/vs_rb.h)
 
 include_directories("src")
 include_directories("include")

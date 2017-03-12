@@ -4,14 +4,9 @@
 
 #include <stdio.h>
 #include <inttypes.h>
-#include <string.h>
-#include <pthread.h>
 #include <stdlib.h>
-#include <sys/user.h>
-#include "ring_buffer.h"
-#include <stdio.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include "vs_rb.h"
+#include "vs_rb.c"
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
@@ -41,9 +36,9 @@ inline static bool on_message(const uint32_t msg_type_id, const uint8_t *buffer,
 }
 
 int main() {
-    struct ring_buffer_header header;
-    const index_t buffer_capacity = ring_buffer_capacity(128 * 1024 * required_record_capacity(DEFAULT_MSG_LENGTH));
-    if (!init_ring_buffer_header(&header, buffer_capacity)) {
+    struct vs_rb_t header;
+    const index_t buffer_capacity = vs_rb_capacity(128 * 1024 * vs_rb_required_record_capacity(DEFAULT_MSG_LENGTH));
+    if (!new_vs_rb(&header, buffer_capacity)) {
         return 1;
     }
 
@@ -51,14 +46,14 @@ int main() {
     int fd;
     char *file_name = "/dev/shm/shared.ipc";
 
-    fd = open(file_name,O_RDWR | O_CREAT | O_TRUNC, (mode_t)0600);
+    fd = open(file_name, O_RDWR | O_CREAT | O_TRUNC, (mode_t) 0600);
     if (fd == -1) {
         perror("open");
         return 1;
     }
     /* Stretch the file size to the size of the (mmapped) array of ints
  */
-    int result = lseek(fd, buffer_capacity-1, SEEK_SET);
+    int result = lseek(fd, buffer_capacity - 1, SEEK_SET);
     if (result == -1) {
         close(fd);
         perror("Error calling lseek() to 'stretch' the file");
@@ -93,14 +88,14 @@ int main() {
     const uint64_t producers = 1;
     const uint64_t tests = 10;
     const uint64_t messages = 100000000;
-    const uint64_t batch_size = header.capacity / required_record_capacity(DEFAULT_MSG_LENGTH);
+    const uint64_t batch_size = header.capacity / vs_rb_required_record_capacity(DEFAULT_MSG_LENGTH);
     const uint64_t total_messages = producers * tests * messages;
-    const message_consumer consumer = &on_message;
+    const vs_rb_message_consumer consumer = &on_message;
     uint64_t read_messages = 0;
     int64_t expected_content = 1;
     uint64_t failed_read = 0;
     while (read_messages < total_messages && expected_content > 0) {
-        const uint32_t read = ring_buffer_batch_read(&header, buffer, consumer, batch_size, &expected_content);
+        const uint32_t read = vs_rb_read(&header, buffer, consumer, batch_size, &expected_content);
         if (read == 0) {
             __asm__ __volatile__("pause;");
             failed_read++;

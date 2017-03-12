@@ -3,8 +3,8 @@
 //
 
 #include <stdatomic.h>
-#include "fixed_size_ring_buffer.h"
-#include "bytes_utils.h"
+#include "fs_rb.h"
+#include "bytes_utils.c"
 
 #define MESSAGE_STATE_SIZE 4
 
@@ -15,17 +15,26 @@ static const index_t CONSUMER_CACHE_POSITION_OFFSET = CACHE_LINE_LENGTH * 4;
 static const index_t CONSUMER_POSITION_OFFSET = CACHE_LINE_LENGTH * 6;
 static const index_t TRAILER_LENGTH = CACHE_LINE_LENGTH * 8;
 
-static inline index_t fixed_size_ring_buffer_capacity(const index_t requested_capacity, const uint32_t message_size) {
+static inline index_t fs_rb_capacity(const index_t requested_capacity, const uint32_t message_size) {
     const index_t next_pow_2_requested_capacity = next_pow_2(requested_capacity);
     const index_t aligned_message_size = align(message_size + MESSAGE_STATE_SIZE, MESSAGE_STATE_SIZE);
     return (next_pow_2_requested_capacity * aligned_message_size) + TRAILER_LENGTH;
 }
 
+static inline uint64_t fs_rb_load_consumer_position(const struct fs_rb_t *const header, const uint8_t *const buffer) {
+    const uint64_t consumer_position = atomic_load_explicit(header->consumer_position, memory_order_relaxed);
+    return consumer_position;
+}
+
+static inline uint64_t fs_rb_load_producer_position(const struct fs_rb_t *const header, const uint8_t *const buffer) {
+    const uint64_t consumer_position = atomic_load_explicit(header->producer_position, memory_order_relaxed);
+    return consumer_position;
+}
 
 static inline bool
-init_fixed_size_ring_buffer_header(uint8_t *const buffer, struct fixed_size_ring_buffer_header *const header,
-                                   const index_t requested_capacity,
-                                   const uint32_t message_size) {
+new_fs_rb(uint8_t *const buffer, struct fs_rb_t *const header,
+          const index_t requested_capacity,
+          const uint32_t message_size) {
     const index_t next_pow_2_requested_capacity = next_pow_2(requested_capacity);
     const index_t aligned_message_size = align(message_size + MESSAGE_STATE_SIZE, MESSAGE_STATE_SIZE);
     const index_t capacity_bytes = (next_pow_2_requested_capacity * aligned_message_size);
@@ -39,9 +48,9 @@ init_fixed_size_ring_buffer_header(uint8_t *const buffer, struct fixed_size_ring
 }
 
 static bool claim_slow_path(uint8_t *const buffer, const index_t message_state_offset,
-                                   uint64_t *const consumer_cache_position_address,
-                                   const uint64_t consumer_cache_position, const uint32_t max_look_ahead_step,
-                                   const index_t mask, const index_t aligned_message_size) {
+                            uint64_t *const consumer_cache_position_address,
+                            const uint64_t consumer_cache_position, const uint32_t max_look_ahead_step,
+                            const index_t mask, const index_t aligned_message_size) {
     //try to look ahead if the consumer has freed MAX_LOOK_AHEAD_STEP messages
     const uint64_t next_consumer_cache_position = consumer_cache_position + max_look_ahead_step;
     //check the state of the message
@@ -70,10 +79,10 @@ static bool claim_slow_path(uint8_t *const buffer, const index_t message_state_o
 }
 
 static inline bool
-try_fixed_size_ring_buffer_claim(uint8_t *const buffer,
-                                 const struct fixed_size_ring_buffer_header *const header,
-                                 const uint32_t max_look_ahead_step,
-                                 uint8_t **const claimed_message) {
+try_fs_rb_sp_claim(uint8_t *const buffer,
+                   const struct fs_rb_t *const header,
+                   const uint32_t max_look_ahead_step,
+                   uint8_t **const claimed_message) {
     const _Atomic uint64_t *const producer_position_address = (_Atomic uint64_t *) header->producer_position;
     uint64_t *const consumer_cache_position_address = (uint64_t *) header->consumer_cache_position;
     const index_t mask = header->mask;
@@ -93,8 +102,8 @@ try_fixed_size_ring_buffer_claim(uint8_t *const buffer,
 }
 
 static bool mp_claim_slow_path(const _Atomic uint64_t *const consumer_position_address,
-                                      const _Atomic uint64_t *const consumer_cache_position_address,
-                                      const int64_t wrap_point, int64_t *consumer_cache_position) {
+                               const _Atomic uint64_t *const consumer_cache_position_address,
+                               const int64_t wrap_point, int64_t *consumer_cache_position) {
     //the queue is really full??
     const uint64_t consumer_position = atomic_load_explicit(consumer_position_address, memory_order_relaxed);
     if (consumer_position <= wrap_point) {
@@ -107,9 +116,9 @@ static bool mp_claim_slow_path(const _Atomic uint64_t *const consumer_position_a
     }
 }
 
-static inline bool try_fixed_size_ring_buffer_mp_claim(
+static inline bool try_fs_rb_mp_claim(
         uint8_t *const buffer,
-        const struct fixed_size_ring_buffer_header *const header,
+        const struct fs_rb_t *const header,
         uint8_t **const claimed_message) {
     const _Atomic uint64_t *const producer_position_address = (_Atomic uint64_t *) header->producer_position;
     const _Atomic uint64_t *const consumer_cache_position_address = (_Atomic uint64_t *) header->consumer_cache_position;
@@ -135,15 +144,15 @@ static inline bool try_fixed_size_ring_buffer_mp_claim(
     return true;
 }
 
-static inline void fixed_size_ring_buffer_commit_claim(const uint8_t *const claimed_message_address) {
+static inline void fs_rb_commit_claim(const uint8_t *const claimed_message_address) {
     const _Atomic uint32_t *const message_state = (_Atomic uint32_t *) (claimed_message_address - MESSAGE_STATE_SIZE);
     atomic_store_explicit(message_state, MESSAGE_STATE_BUSY, memory_order_release);
 }
 
-inline static uint32_t fixed_size_ring_buffer_batch_read(
+inline static uint32_t fs_rb_read(
         uint8_t *const buffer,
-        const struct fixed_size_ring_buffer_header *const header,
-        const fixed_size_message_consumer consumer,
+        const struct fs_rb_t *const header,
+        const fs_rb_message_consumer consumer,
         const uint32_t count, void *const context) {
     uint32_t msg_read = 0;
     const _Atomic uint64_t *const consumer_position_address = (_Atomic uint64_t *) header->consumer_position;
@@ -176,7 +185,7 @@ inline static uint32_t fixed_size_ring_buffer_batch_read(
     return count;
 }
 
-static inline index_t fixed_size_ring_buffer_size(const struct fixed_size_ring_buffer_header *const header) {
+static inline index_t fs_rb_size(const struct fs_rb_t *const header) {
     const _Atomic uint64_t *consumer_position_address = (_Atomic uint64_t *) header->consumer_position;
     const _Atomic uint64_t *producer_position_address = (_Atomic uint64_t *) header->producer_position;
     const uint64_t consumer_position = atomic_load_explicit(consumer_position_address, memory_order_relaxed);

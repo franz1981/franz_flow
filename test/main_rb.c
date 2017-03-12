@@ -1,16 +1,16 @@
 #include <stdio.h>
 #include <inttypes.h>
-#include <string.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/user.h>
-#include "ring_buffer.h"
+#include "vs_rb.h"
+#include "vs_rb.c"
 
 #define DEFAULT_MSG_TYPE_ID 1
 #define DEFAULT_MSG_LENGTH 8
 
 struct ring_buffer_test {
-    struct ring_buffer_header *header;
+    struct vs_rb_t *header;
     uint8_t *buffer;
     uint64_t tests;
     uint64_t messages;
@@ -19,7 +19,7 @@ struct ring_buffer_test {
 
 static void *single_producer(void *arg) {
     struct ring_buffer_test *test = (struct ring_buffer_test *) arg;
-    struct ring_buffer_header *header = test->header;
+    struct vs_rb_t *header = test->header;
     uint8_t *buffer = test->buffer;
     const uint64_t tests = test->tests;
     const uint64_t messages = test->messages;
@@ -33,20 +33,20 @@ static void *single_producer(void *arg) {
         uint64_t total_try = 0;
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_time);
         for (uint64_t m = 0; m < messages; m++) {
-            while (!try_ring_buffer_sp_claim(header, buffer, DEFAULT_MSG_LENGTH, &claimed_position, &claimed_index)) {
+            while (!vs_rb_try_sp_claim(header, buffer, DEFAULT_MSG_LENGTH, &claimed_position, &claimed_index)) {
                 __asm__ __volatile__("pause;");
                 total_try++;
                 //wait strategy
             }
             total_try++;
             //provides better way to perform zero copy!!!!
-            uint64_t *content_offset = (uint64_t *) (buffer + encoded_msg_offset(claimed_index));
+            uint64_t *content_offset = (uint64_t *) (buffer + vs_rb_encoded_msg_offset(claimed_index));
             *content_offset = msg_content + 1;
-            ring_buffer_commit(buffer, claimed_index, DEFAULT_MSG_TYPE_ID, DEFAULT_MSG_LENGTH);
+            vs_rb_commit_claim(buffer, claimed_index, DEFAULT_MSG_TYPE_ID, DEFAULT_MSG_LENGTH);
             msg_content++;
         }
         //wait until all the messages get consumed
-        while (ring_buffer_size(header, buffer) != 0) {
+        while (vs_rb_size(header, buffer) != 0) {
             __asm__ __volatile__("pause;");
             //employ wait strategy
         }
@@ -63,7 +63,7 @@ static void *single_producer(void *arg) {
 static void *multi_producer(void *arg) {
     const pthread_t thread_id = pthread_self();
     struct ring_buffer_test *test = (struct ring_buffer_test *) arg;
-    struct ring_buffer_header *header = test->header;
+    struct vs_rb_t *header = test->header;
     uint8_t *buffer = test->buffer;
     const uint64_t tests = test->tests;
     const uint64_t messages = test->messages;
@@ -77,16 +77,16 @@ static void *multi_producer(void *arg) {
         uint64_t total_try = 0;
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_time);
         for (uint64_t m = 0; m < messages; m++) {
-            while (!try_ring_buffer_mp_claim(header, buffer, DEFAULT_MSG_LENGTH, &claimed_position, &claimed_index)) {
+            while (!vs_rb_try_mp_claim(header, buffer, DEFAULT_MSG_LENGTH, &claimed_position, &claimed_index)) {
                 __asm__ __volatile__("pause;");
                 total_try++;
                 //wait strategy
             }
             total_try++;
             //provides better way to perform zero copy!!!!
-            uint64_t *content_offset = (uint64_t *) (buffer + encoded_msg_offset(claimed_index));
+            uint64_t *content_offset = (uint64_t *) (buffer + vs_rb_encoded_msg_offset(claimed_index));
             *content_offset = msg_content + 1;
-            ring_buffer_commit(buffer, claimed_index, DEFAULT_MSG_TYPE_ID, DEFAULT_MSG_LENGTH);
+            vs_rb_commit_claim(buffer, claimed_index, DEFAULT_MSG_TYPE_ID, DEFAULT_MSG_LENGTH);
             msg_content++;
         }
         //wait until the last message is consumed
@@ -134,19 +134,19 @@ inline static bool on_message(const uint32_t msg_type_id, const uint8_t *buffer,
 
 static void *consumer(void *arg) {
     struct ring_buffer_test *test = (struct ring_buffer_test *) arg;
-    struct ring_buffer_header *header = test->header;
+    struct vs_rb_t *header = test->header;
     uint8_t *buffer = test->buffer;
     const uint64_t producers = test->producers;
     const uint64_t tests = test->tests;
     const uint64_t messages = test->messages;
-    const uint64_t batch_size = (header->capacity) / required_record_capacity(DEFAULT_MSG_LENGTH);
+    const uint64_t batch_size = (header->capacity) / vs_rb_required_record_capacity(DEFAULT_MSG_LENGTH);
     const uint64_t total_messages = producers * tests * messages;
-    const message_consumer consumer = &on_message;
+    const vs_rb_message_consumer consumer = &on_message;
     uint64_t read_messages = 0;
     int64_t expected_content = 1;
     uint64_t failed_read = 0;
     while (read_messages < total_messages && expected_content > 0) {
-        const uint32_t read = ring_buffer_batch_read(header, buffer, consumer, batch_size, &expected_content);
+        const uint32_t read = vs_rb_read(header, buffer, consumer, batch_size, &expected_content);
         if (read == 0) {
             __asm__ __volatile__("pause;");
             failed_read++;
@@ -164,9 +164,9 @@ static void *consumer(void *arg) {
 }
 
 int main() {
-    struct ring_buffer_header header;
-    const index_t buffer_capacity = ring_buffer_capacity(64 * 1024 * required_record_capacity(DEFAULT_MSG_LENGTH));
-    if (!init_ring_buffer_header(&header, buffer_capacity)) {
+    struct vs_rb_t header;
+    const index_t buffer_capacity = vs_rb_capacity(64 * 1024 * vs_rb_required_record_capacity(DEFAULT_MSG_LENGTH));
+    if (!new_vs_rb(&header, buffer_capacity)) {
         return 1;
     }
     uint8_t *buffer = aligned_alloc(PAGE_SIZE, buffer_capacity);
@@ -182,8 +182,8 @@ int main() {
     struct ring_buffer_test test;
     test.buffer = buffer;
     test.header = &header;
-    test.messages = 100000000;
-    test.tests = 5;
+    test.messages = 1000000000;
+    test.tests = 10;
     test.producers = PRODUCERS;
     pthread_t consumer_processor;
     pthread_create(&consumer_processor, NULL, consumer, &test);

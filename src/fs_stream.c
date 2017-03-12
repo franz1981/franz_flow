@@ -3,8 +3,8 @@
 //
 
 #include <stdatomic.h>
-#include "fixed_size_stream.h"
-#include "bytes_utils.h"
+#include "fs_stream.h"
+#include "bytes_utils.c"
 
 #define MESSAGE_STATE_SIZE 4
 
@@ -16,7 +16,7 @@ static const uint32_t CONSUMER_POSITION_OFFSET = CACHE_LINE_LENGTH * 6;
 static const uint32_t PRODUCERS_CYCLE_CLAIM_OFFSET = CACHE_LINE_LENGTH * 8;
 
 static inline uint32_t
-fixed_size_stream_capacity(const uint32_t requested_capacity, const uint32_t message_size, const uint32_t cycles) {
+fs_stream_capacity(const uint32_t requested_capacity, const uint32_t message_size, const uint32_t cycles) {
     if (cycles < 2) {
         //ERROR!
         return 0;
@@ -31,9 +31,9 @@ fixed_size_stream_capacity(const uint32_t requested_capacity, const uint32_t mes
     return (capacity_bytes + trailer_bytes);
 }
 
-static inline bool new_fixed_size_stream(
+static inline bool new_fs_stream(
         uint8_t *const buffer,
-        struct fixed_size_stream_t *const stream,
+        struct fs_stream_t *const stream,
         const uint32_t requested_capacity,
         const uint32_t message_size,
         const uint32_t cycles) {
@@ -64,7 +64,7 @@ static inline bool new_fixed_size_stream(
     return true;
 }
 
-static void rotate_cycle(const struct fixed_size_stream_t *const stream,
+static void rotate_cycle(const struct fs_stream_t *const stream,
                          const uint32_t active_cycle_index,
                          const uint64_t producer_cycle_claim) {
     //manage cycle rotation too!
@@ -82,7 +82,7 @@ static void rotate_cycle(const struct fixed_size_stream_t *const stream,
     atomic_store_explicit(stream->active_cycle_index, next_active_cycle_index, memory_order_release);
 }
 
-static bool is_backpressured(const struct fixed_size_stream_t *const stream, const uint64_t producer_position) {
+static bool is_backpressured(const struct fs_stream_t *const stream, const uint64_t producer_position) {
     const uint64_t consumer_position = atomic_load_explicit(stream->consumer_position, memory_order_relaxed);
     const uint64_t claim_limit = consumer_position + stream->max_gain;
     if (producer_position < claim_limit) {
@@ -97,8 +97,8 @@ static bool is_backpressured(const struct fixed_size_stream_t *const stream, con
     }
 }
 
-static inline bool fixed_size_stream_try_claim(
-        const struct fixed_size_stream_t *const stream,
+static inline bool fs_stream_try_claim(
+        const struct fs_stream_t *const stream,
         uint8_t **const claimed_message) {
     //calculate the claim limit based on consumer_cached_position
     const uint32_t active_cycle_index = atomic_load_explicit(stream->active_cycle_index, memory_order_acquire);
@@ -135,14 +135,14 @@ static inline bool fixed_size_stream_try_claim(
     }
 }
 
-static inline void fixed_size_stream_commit_claim(const uint8_t *const claimed_message_address) {
+static inline void fs_stream_commit_claim(const uint8_t *const claimed_message_address) {
     const _Atomic uint32_t *const message_state = (_Atomic uint32_t *) (claimed_message_address - MESSAGE_STATE_SIZE);
     atomic_store_explicit(message_state, MESSAGE_STATE_BUSY, memory_order_release);
 }
 
-inline static uint32_t fixed_size_stream_read(
-        const struct fixed_size_stream_t *const stream,
-        const fixed_size_stream_message_consumer consumer,
+static inline uint32_t fs_stream_read(
+        const struct fs_stream_t *const stream,
+        const fs_stream_message_consumer consumer,
         const uint32_t count, void *const context) {
     uint32_t msg_read = 0;
     const _Atomic uint64_t *const consumer_position_address = stream->consumer_position;
@@ -176,7 +176,7 @@ inline static uint32_t fixed_size_stream_read(
     return count;
 }
 
-static inline uint64_t load_producer_position(const struct fixed_size_stream_t *const stream) {
+static inline uint64_t fs_stream_load_producer_position(const struct fs_stream_t *const stream) {
     const uint32_t active_cycle_index = atomic_load_explicit(stream->active_cycle_index, memory_order_acquire);
     _Atomic uint64_t *producers_active_cycle_claim_address =
             stream->producers_cycle_claim + (sizeof(uint64_t) * active_cycle_index);
@@ -191,14 +191,14 @@ static inline uint64_t load_producer_position(const struct fixed_size_stream_t *
     return producer_position;
 }
 
-static inline uint64_t load_consumer_position(const struct fixed_size_stream_t *const stream) {
+static inline uint64_t fs_stream_load_consumer_position(const struct fs_stream_t *const stream) {
     const uint64_t consumer_position = atomic_load_explicit(stream->consumer_position, memory_order_relaxed);
     return consumer_position;
 }
 
-static inline uint32_t fixed_size_stream_size(const struct fixed_size_stream_t *const stream) {
-    const uint64_t producer_position = load_producer_position(stream);
-    const uint64_t consumer_position = load_consumer_position(stream);
+static inline uint32_t fs_stream_size(const struct fs_stream_t *const stream) {
+    const uint64_t producer_position = fs_stream_load_producer_position(stream);
+    const uint64_t consumer_position = fs_stream_load_consumer_position(stream);
     const uint32_t size = (uint32_t) (producer_position - consumer_position);
     return size;
 }

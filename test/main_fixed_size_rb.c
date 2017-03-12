@@ -3,15 +3,14 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/user.h>
-#include <unistd.h>
-#include "fixed_size_ring_buffer.h"
-#include "fixed_size_ring_buffer.c"
+#include "fs_rb.h"
+#include "fs_rb.c"
 
 #define MSG_INITIAL_PAD 4
 #define DEFAULT_MSG_LENGTH 12
 
 struct ring_buffer_test {
-    struct fixed_size_ring_buffer_header *header;
+    struct fs_rb_t *header;
     uint8_t *buffer;
     uint64_t tests;
     uint64_t messages;
@@ -24,7 +23,7 @@ struct ring_buffer_test {
 void *producer(void *arg) {
     const pthread_t thread_id = pthread_self();
     struct ring_buffer_test *test = (struct ring_buffer_test *) arg;
-    struct fixed_size_ring_buffer_header *header = test->header;
+    struct fs_rb_t *header = test->header;
     uint8_t *buffer = test->buffer;
     const uint64_t tests = test->tests;
     const uint64_t messages = test->messages;
@@ -40,13 +39,13 @@ void *producer(void *arg) {
 
             const uint64_t next_msg_id = msg_id + 1;
             if (PRODUCERS == 1) {
-                while (!try_fixed_size_ring_buffer_claim(buffer, header, MAX_LOOKAHEAD_CLAIM, &message_content)) {
+                while (!try_fs_rb_sp_claim(buffer, header, MAX_LOOKAHEAD_CLAIM, &message_content)) {
                     __asm__ __volatile__("pause;");
                     total_try++;
                     //wait strategy
                 }
             } else {
-                while (!try_fixed_size_ring_buffer_mp_claim(buffer, header, &message_content)) {
+                while (!try_fs_rb_mp_claim(buffer, header, &message_content)) {
                     __asm__ __volatile__("pause;");
                     total_try++;
                     //wait strategy
@@ -56,14 +55,14 @@ void *producer(void *arg) {
             //provides better way to perform zero copy!!!!
             uint64_t *content_offset = (uint64_t *) (message_content + MSG_INITIAL_PAD);
             *content_offset = next_msg_id;
-            fixed_size_ring_buffer_commit_claim(message_content);
+            fs_rb_commit_claim(message_content);
             msg_id = next_msg_id;
         }
         //to verify the theory of the false sharing when the consumer is too fast...
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_produce_time);
         //wait until all the messages get consumed
-        const uint64_t producer_position = atomic_load_explicit(header->producer_position, memory_order_relaxed);
-        while (atomic_load_explicit(header->consumer_position, memory_order_relaxed) < producer_position) {
+        const uint64_t producer_position = fs_rb_load_producer_position(header, buffer);
+        while (fs_rb_load_consumer_position(header, buffer) < producer_position) {
             __asm__ __volatile__("pause;");
             //employ wait strategy
         }
@@ -102,20 +101,20 @@ inline static bool on_message(uint8_t *const buffer, void *const context) {
 
 void *batch_consumer(void *arg) {
     struct ring_buffer_test *test = (struct ring_buffer_test *) arg;
-    struct fixed_size_ring_buffer_header *header = test->header;
+    struct fs_rb_t *header = test->header;
     uint8_t *buffer = test->buffer;
     const uint64_t tests = test->tests;
     const uint64_t messages = test->messages;
     const uint32_t batch_size = header->capacity / 64;
     const uint64_t total_messages = test->producers * tests * messages;
-    const fixed_size_message_consumer consumer = &on_message;
+    const fs_rb_message_consumer consumer = &on_message;
     int64_t expected_content = 1;
     uint64_t read_messages = 0;
     uint64_t failed_read = 0;
     uint64_t success = 0;
     while (read_messages < total_messages && expected_content > 0) {
-        const uint32_t read = fixed_size_ring_buffer_batch_read(buffer, header, consumer, batch_size,
-                                                                &expected_content);
+        const uint32_t read = fs_rb_read(buffer, header, consumer, batch_size,
+                                         &expected_content);
         if (read == 0) {
             __asm__ __volatile__("pause;");
             failed_read++;
@@ -136,13 +135,13 @@ void *batch_consumer(void *arg) {
 int main() {
     const index_t requested_capacity = 64 * 1024;
 
-    const index_t buffer_capacity = fixed_size_ring_buffer_capacity(requested_capacity, DEFAULT_MSG_LENGTH);
+    const index_t buffer_capacity = fs_rb_capacity(requested_capacity, DEFAULT_MSG_LENGTH);
 
     uint8_t *buffer = aligned_alloc(PAGE_SIZE, buffer_capacity);
     printf("ALLOCATED %d bytes aligned on: %ld\n", buffer_capacity, PAGE_SIZE);
 
-    struct fixed_size_ring_buffer_header header;
-    if (!init_fixed_size_ring_buffer_header(buffer, &header, requested_capacity, DEFAULT_MSG_LENGTH)) {
+    struct fs_rb_t header;
+    if (!new_fs_rb(buffer, &header, requested_capacity, DEFAULT_MSG_LENGTH)) {
         return 1;
     }
 

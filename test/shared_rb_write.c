@@ -4,13 +4,10 @@
 
 #include <stdio.h>
 #include <inttypes.h>
-#include <string.h>
 #include <pthread.h>
 #include <stdlib.h>
-#include <sys/user.h>
-#include "ring_buffer.h"
-#include <stdio.h>
-#include <sys/types.h>
+#include "vs_rb.h"
+#include "vs_rb.c"
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -20,7 +17,7 @@
 #define DEFAULT_MSG_LENGTH 8
 
 int main() {
-    struct ring_buffer_header header;
+    struct vs_rb_t header;
 
 
     char *mmap_bytes;
@@ -37,7 +34,7 @@ int main() {
     stat(file_name, &st);
 
     const index_t buffer_capacity = st.st_size;
-    if (!init_ring_buffer_header(&header, buffer_capacity)) {
+    if (!new_vs_rb(&header, buffer_capacity)) {
         return 1;
     }
 
@@ -68,15 +65,15 @@ int main() {
         uint64_t total_try = 0;
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_time);
         for (uint64_t m = 0; m < messages; m++) {
-            while (!try_ring_buffer_sp_claim(&header, buffer, DEFAULT_MSG_LENGTH, &claimed_position, &claimed_index)) {
+            while (!vs_rb_try_sp_claim(&header, buffer, DEFAULT_MSG_LENGTH, &claimed_position, &claimed_index)) {
                 __asm__ __volatile__("pause;");
                 total_try++;
                 //wait strategy
             }
             total_try++;
-            uint64_t *content_offset = (uint64_t *) (buffer + encoded_msg_offset(claimed_index));
+            uint64_t *content_offset = (uint64_t *) (buffer + vs_rb_encoded_msg_offset(claimed_index));
             *content_offset = msg_content + 1;
-            ring_buffer_commit(buffer, claimed_index, DEFAULT_MSG_TYPE_ID, DEFAULT_MSG_LENGTH);
+            vs_rb_commit_claim(buffer, claimed_index, DEFAULT_MSG_TYPE_ID, DEFAULT_MSG_LENGTH);
             msg_content++;
         }
         //wait until the last message is consumed

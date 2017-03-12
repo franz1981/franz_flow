@@ -7,15 +7,14 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/user.h>
-#include <unistd.h>
-#include "fixed_size_stream.h"
-#include "fixed_size_stream.c"
+#include "fs_stream.h"
+#include "fs_stream.c"
 
 #define MSG_INITIAL_PAD 4
 #define DEFAULT_MSG_LENGTH 12
 
 struct stream_test {
-    struct fixed_size_stream_t *stream;
+    struct fs_stream_t *stream;
     uint64_t tests;
     uint64_t messages;
     uint64_t producers;
@@ -26,7 +25,7 @@ struct stream_test {
 void *producer(void *arg) {
     const pthread_t thread_id = pthread_self();
     struct stream_test *test = (struct stream_test *) arg;
-    struct fixed_size_stream_t *stream = test->stream;
+    struct fs_stream_t *stream = test->stream;
     const uint64_t tests = test->tests;
     const uint64_t messages = test->messages;
     uint64_t msg_id = 0;
@@ -40,8 +39,8 @@ void *producer(void *arg) {
         for (uint64_t m = 0; m < messages; m++) {
 
             const uint64_t next_msg_id = msg_id + 1;
-            //while (!try_fixed_size_ring_buffer_mp_claim(buffer, header, &message_content)) {
-            while (!fixed_size_stream_try_claim(stream, &message_content)) {
+            //while (!try_fs_rb_mp_claim(buffer, header, &message_content)) {
+            while (!fs_stream_try_claim(stream, &message_content)) {
                 __asm__ __volatile__("pause;");
                 total_try++;
                 //wait strategy
@@ -51,14 +50,14 @@ void *producer(void *arg) {
             //printf("try to write on:%p\n",message_content);
             uint64_t *content_offset = (uint64_t *) (message_content + MSG_INITIAL_PAD);
             *content_offset = next_msg_id;
-            fixed_size_stream_commit_claim(message_content);
+            fs_stream_commit_claim(message_content);
             msg_id = next_msg_id;
         }
-        uint64_t last_producer_position = load_producer_position(stream);
+        uint64_t last_producer_position = fs_stream_load_producer_position(stream);
         //to verify the theory of the false sharing when the consumer is too fast...
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_produce_time);
         //is an approximation -> wait until the last produced message is being consumed!
-        while (load_consumer_position(stream) < last_producer_position) {
+        while (fs_stream_load_consumer_position(stream) < last_producer_position) {
             __asm__ __volatile__("pause;");
             //employ wait strategy
         }
@@ -98,20 +97,20 @@ inline static bool on_message(uint8_t *const buffer, void *const context) {
 
 void *consumer(void *arg) {
     struct stream_test *test = (struct stream_test *) arg;
-    struct fixed_size_stream_t *stream = test->stream;
+    struct fs_stream_t *stream = test->stream;
     const uint64_t tests = test->tests;
     const uint64_t producers = test->producers;
     const uint64_t messages = test->messages;
     const uint32_t batch_size = stream->cycle_length;
     const uint64_t total_messages = producers * tests * messages;
-    const fixed_size_stream_message_consumer consumer = &on_message;
+    const fs_stream_message_consumer consumer = &on_message;
     int64_t expected_content = 1;
     uint64_t read_messages = 0;
     uint64_t failed_read = 0;
     uint64_t success = 0;
     while (read_messages < total_messages && expected_content > 0) {
-        const uint32_t read = fixed_size_stream_read(stream, consumer, batch_size,
-                                                     &expected_content);
+        const uint32_t read = fs_stream_read(stream, consumer, batch_size,
+                                             &expected_content);
         if (read == 0) {
             __asm__ __volatile__("pause;");
             failed_read++;
@@ -132,13 +131,13 @@ void *consumer(void *arg) {
 int main() {
     const uint32_t requested_capacity = 64 * 1024;
     const uint32_t cycles = 2;
-    const index_t buffer_capacity = fixed_size_stream_capacity(requested_capacity, DEFAULT_MSG_LENGTH, cycles);
+    const index_t buffer_capacity = fs_stream_capacity(requested_capacity, DEFAULT_MSG_LENGTH, cycles);
 
     uint8_t *buffer = aligned_alloc(PAGE_SIZE, buffer_capacity);
     printf("ALLOCATED %d bytes aligned on: %ld\n", buffer_capacity, PAGE_SIZE);
 
-    struct fixed_size_stream_t stream;
-    if (!new_fixed_size_stream(buffer, &stream, requested_capacity, DEFAULT_MSG_LENGTH, cycles)) {
+    struct fs_stream_t stream;
+    if (!new_fs_stream(buffer, &stream, requested_capacity, DEFAULT_MSG_LENGTH, cycles)) {
         return 1;
     }
 
