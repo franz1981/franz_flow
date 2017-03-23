@@ -14,7 +14,8 @@
 //the initial pad is used to make sure to write/read 8 bytes aligned!
 #define MSG_INITIAL_PAD 4
 //must be enough to write at least the msg id of 8 bytes!!
-#define MSG_LENGTH 1024
+#define MSG_LENGTH 1020
+#define RB_MSG_LENGTH MSG_LENGTH + MSG_INITIAL_PAD
 
 struct ring_buffer_test {
     struct fs_rb_t *header;
@@ -24,7 +25,7 @@ struct ring_buffer_test {
     uint64_t producers;
 };
 
-#define PRODUCERS 2
+#define PRODUCERS 1
 #define MAX_LOOKAHEAD_CLAIM 4096
 
 void *producer(void *arg) {
@@ -36,7 +37,7 @@ void *producer(void *arg) {
     const uint64_t messages = test->messages;
     uint64_t msg_id = 0;
     uint8_t *message_content = NULL;
-    const size_t real_msg_size = MSG_LENGTH - MSG_INITIAL_PAD;
+    const size_t real_msg_size = MSG_LENGTH;
     uint64_t *const msg = (uint64_t *) malloc(real_msg_size);
     for (uint64_t t = 0; t < tests; t++) {
         struct timespec start_time;
@@ -90,20 +91,25 @@ void *producer(void *arg) {
     return NULL;
 }
 
+inline static void check_msg(const uint64_t *const msg_content) {
+    const uint64_t msg = *msg_content;
+    const size_t sizeOfMsg = sizeof(uint64_t);
+    const uint8_t *const rest_msg = (uint8_t *) (msg_content + sizeOfMsg);
+    uint64_t total_rest = 0;
+    const int msg_length = (MSG_LENGTH - sizeOfMsg);
+    for (int i = 0; i < msg_length; i++) {
+        total_rest += (uint64_t) *rest_msg;
+    }
+    const uint64_t total = total_rest + msg;
+    if (total != msg) {
+        printf("CONSUMER ERROR!\n");
+    }
+}
+
 inline static bool on_message(uint8_t *const buffer, void *const context) {
-    int64_t *expected_content = (int64_t *) context;
-    const uint64_t expected_msg_content = *expected_content;
     //PAD REQUIRED TO GET 8 BYTES ALIGNED READ
     const uint64_t *msg_content_address = (uint64_t *) (buffer + MSG_INITIAL_PAD);
-    if (PRODUCERS == 1) {
-        if (expected_msg_content != *msg_content_address) {
-            *expected_content = -1;
-            return false;
-        }
-    }
-    //change next expected content!
-    const uint64_t next_expected_content = expected_msg_content + 1;
-    *expected_content = next_expected_content;
+    check_msg(msg_content_address);
     return true;
 }
 
@@ -116,13 +122,12 @@ void *batch_consumer(void *arg) {
     const uint32_t batch_size = header->capacity / 64;
     const uint64_t total_messages = test->producers * tests * messages;
     const fs_rb_message_consumer consumer = &on_message;
-    int64_t expected_content = 1;
     uint64_t read_messages = 0;
     uint64_t failed_read = 0;
     uint64_t success = 0;
-    while (read_messages < total_messages && expected_content > 0) {
+    while (read_messages < total_messages) {
         const uint32_t read = fs_rb_read(buffer, header, consumer, batch_size,
-                                         &expected_content);
+                                         NULL);
         if (read == 0) {
             __asm__ __volatile__("pause;");
             failed_read++;
@@ -131,25 +136,23 @@ void *batch_consumer(void *arg) {
             read_messages += read;
         }
     }
-    if (expected_content < 0) {
-        printf("read %ld messages instead of %ld!", read_messages, total_messages);
-    } else {
-        printf("avg batch reads:%ld %ld/%ld failed reads\n", read_messages / success, failed_read, total_messages);
-    }
-
+    printf("avg batch reads:%ld %ld/%ld failed reads\n", read_messages / success, failed_read, total_messages);
     return NULL;
 }
 
 int main() {
+    if (MSG_LENGTH < sizeof(uint64_t)) {
+        return -1;
+    }
     const index_t requested_capacity = 64 * 1024;
 
-    const index_t buffer_capacity = fs_rb_capacity(requested_capacity, MSG_LENGTH);
+    const index_t buffer_capacity = fs_rb_capacity(requested_capacity, RB_MSG_LENGTH);
 
     uint8_t *buffer = aligned_alloc(PAGE_SIZE, buffer_capacity);
     printf("ALLOCATED %d bytes aligned on: %ld\n", buffer_capacity, PAGE_SIZE);
 
     struct fs_rb_t header;
-    if (!new_fs_rb(buffer, &header, requested_capacity, MSG_LENGTH)) {
+    if (!new_fs_rb(buffer, &header, requested_capacity, RB_MSG_LENGTH)) {
         return 1;
     }
 

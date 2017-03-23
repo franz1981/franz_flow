@@ -24,7 +24,7 @@ struct ring_buffer_test {
     uint64_t producers;
 };
 
-#define PRODUCERS 2
+#define PRODUCERS 1
 #define MAX_LOOKAHEAD_CLAIM 4096
 
 void *producer(void *arg) {
@@ -89,23 +89,29 @@ void *producer(void *arg) {
     return NULL;
 }
 
+inline static void check_msg(const uint64_t *const msg_content) {
+    const uint64_t msg = *msg_content;
+    const size_t sizeOfMsg = sizeof(uint64_t);
+    const uint8_t *const rest_msg = (uint8_t *) (msg_content + sizeOfMsg);
+    uint64_t total_rest = 0;
+    const int msg_length = (MSG_LENGTH - sizeOfMsg);
+    for (int i = 0; i < msg_length; i++) {
+        total_rest += (uint64_t) *rest_msg;
+    }
+    const uint64_t total = total_rest + msg;
+    if (total != msg) {
+        printf("CONSUMER ERROR!\n");
+    }
+}
+
 inline static bool on_message(uint8_t *const buffer, void *const context) {
-    int64_t *expected_content = (int64_t *) context;
-    const uint64_t expected_msg_content = *expected_content;
     //PAD REQUIRED TO GET 8 BYTES ALIGNED READ
     const uint64_t *msg_content_address = (uint64_t *) (buffer + MSG_INITIAL_PAD);
     uint64_t *const msg_content = (uint64_t *) *msg_content_address;
-    if (PRODUCERS == 1) {
-        if (expected_msg_content != *msg_content) {
-            *expected_content = -1;
-            return false;
-        }
-    }
+    //consume the whole message
+    check_msg(msg_content);
     //free it in the consumer thread
     free(msg_content);
-    //change next expected content!
-    const uint64_t next_expected_content = expected_msg_content + 1;
-    *expected_content = next_expected_content;
     return true;
 }
 
@@ -118,13 +124,11 @@ void *batch_consumer(void *arg) {
     const uint32_t batch_size = header->capacity / 64;
     const uint64_t total_messages = test->producers * tests * messages;
     const fs_rb_message_consumer consumer = &on_message;
-    int64_t expected_content = 1;
     uint64_t read_messages = 0;
     uint64_t failed_read = 0;
     uint64_t success = 0;
-    while (read_messages < total_messages && expected_content > 0) {
-        const uint32_t read = fs_rb_read(buffer, header, consumer, batch_size,
-                                         &expected_content);
+    while (read_messages < total_messages) {
+        const uint32_t read = fs_rb_read(buffer, header, consumer, batch_size, NULL);
         if (read == 0) {
             __asm__ __volatile__("pause;");
             failed_read++;
@@ -133,16 +137,16 @@ void *batch_consumer(void *arg) {
             read_messages += read;
         }
     }
-    if (expected_content < 0) {
-        printf("read %ld messages instead of %ld!", read_messages, total_messages);
-    } else {
-        printf("avg batch reads:%ld %ld/%ld failed reads\n", read_messages / success, failed_read, total_messages);
-    }
+
+    printf("avg batch reads:%ld %ld/%ld failed reads\n", read_messages / success, failed_read, total_messages);
 
     return NULL;
 }
 
 int main() {
+    if (MSG_LENGTH < sizeof(uint64_t)) {
+        return -1;
+    }
     const index_t requested_capacity = 64 * 1024;
 
     const index_t buffer_capacity = fs_rb_capacity(requested_capacity, MSG_POINTER_LENGTH);
@@ -160,7 +164,7 @@ int main() {
     //check alignment minumum
     const bool is_aligned = (((int64_t) buffer) & 7) == 0;
     if (!is_aligned) {
-        return 1;
+        return EXIT_FAILURE;
     }
 
     struct ring_buffer_test test;
@@ -180,5 +184,5 @@ int main() {
     }
     pthread_join(consumer_processor, NULL);
     free(buffer);
-    return 0;
+    return EXIT_SUCCESS;
 }
