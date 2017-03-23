@@ -27,6 +27,7 @@ struct ring_buffer_test {
 
 #define PRODUCERS 1
 #define MAX_LOOKAHEAD_CLAIM 4096
+#define ZERO_COPY false
 
 void *producer(void *arg) {
     const pthread_t thread_id = pthread_self();
@@ -47,7 +48,9 @@ void *producer(void *arg) {
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_time);
         for (uint64_t m = 0; m < messages; m++) {
             const uint64_t next_msg_id = msg_id + 1;
-            *msg = next_msg_id;
+            if (!ZERO_COPY) {
+                *msg = next_msg_id;
+            }
             if (PRODUCERS == 1) {
                 while (!try_fs_rb_sp_claim(buffer, header, MAX_LOOKAHEAD_CLAIM, &message_content)) {
                     __asm__ __volatile__("pause;");
@@ -62,8 +65,13 @@ void *producer(void *arg) {
                 }
             }
             total_try++;
-            //provides better way to perform zero copy!!!!
-            memcpy((void *) (message_content + MSG_INITIAL_PAD), msg, real_msg_size);
+            if (!ZERO_COPY) {
+                memcpy((void *) (message_content + MSG_INITIAL_PAD), msg, real_msg_size);
+            } else {
+                //no need to memset/memcpy, encode directly the value inside the ring buffer
+                uint64_t *const zero_copy_msg = (uint64_t *) (message_content + MSG_INITIAL_PAD);
+                *zero_copy_msg = next_msg_id;
+            }
             fs_rb_commit_claim(message_content);
             msg_id = next_msg_id;
         }
