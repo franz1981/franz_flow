@@ -81,9 +81,9 @@ void *producer(void *arg) {
                 (end_time.tv_nsec - end_produce_time.tv_nsec);
         const uint64_t elapsed_nanos =
                 ((end_time.tv_sec - start_time.tv_sec) * 1000000000) + (end_time.tv_nsec - start_time.tv_nsec);
-        const uint64_t tpt = (messages * 1000L) / elapsed_nanos;
+        const uint64_t tpt = (messages * 1000000L) / elapsed_nanos;
 
-        printf("[%ld]\t%ldM ops/sec %ld/%ld failed tries end latency:%ld ns\n", thread_id, tpt, total_try - messages,
+        printf("[%ld]\t%ldK ops/sec %ld/%ld failed tries end latency:%ld ns\n", thread_id, tpt, total_try - messages,
                (uint64_t) messages,
                wait_nanos);
     }
